@@ -3,3 +3,6 @@ uvicorn[standard]==0.24.0
 pydantic==2.5.0
 dashscope==1.25.0
 python-multipart==0.0.6
+PyQt6==6.6.1
+requests==2.31.0
+mysql-connector-python==8.3.0
