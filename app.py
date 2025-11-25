@@ -1,14 +1,24 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 import logging
 import uuid
+from datetime import timedelta
 from schema_generator import (
     parse_natural_language_to_schema,
     build_er_model,
     convert_to_relational_schema,
     generate_mysql_ddl
 )
-from models import GenerateSchemaRequest, GenerateSchemaResponse, ErrorResponse
+from models import (
+    GenerateSchemaRequest, GenerateSchemaResponse, ErrorResponse,
+    UserRegister, UserLogin, Token, UserHistoryResponse
+)
+from database import get_db, init_db, User, InteractionRecord
+from auth import (
+    authenticate_user, create_access_token, get_current_active_user,
+    get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES
+)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -35,7 +45,11 @@ app.add_middleware(
     summary="生成数据库模式",
     description="根据自然语言描述生成数据库schema、ER模型和MySQL DDL"
 )
-async def generate_schema(request: GenerateSchemaRequest):
+async def generate_schema(
+    request: GenerateSchemaRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
     """
     主生成接口：将自然语言转换为数据库模式
     """
@@ -78,6 +92,19 @@ async def generate_schema(request: GenerateSchemaRequest):
             session_id=session_id
         )
 
+        # 保存交互记录到数据库
+        interaction_record = InteractionRecord(
+            user_id=current_user.id,
+            description=request.description,
+            schema_result=schema,
+            er_model_result=er_model_dict,
+            ddl_result=ddl,
+            session_id=session_id
+        )
+        db.add(interaction_record)
+        db.commit()
+        db.refresh(interaction_record)
+
         logger.info(f"请求处理完成，session_id: {session_id}")
         return response
 
@@ -101,6 +128,91 @@ async def health():
     健康检查
     """
     return {"status": "healthy"}
+
+@app.post("/auth/register", response_model=Token)
+async def register_user(user: UserRegister, db: Session = Depends(get_db)):
+    """
+    用户注册
+    """
+    # 检查用户名是否已存在
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="用户名已存在")
+
+    # 检查邮箱是否已存在
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="邮箱已被注册")
+
+    # 创建新用户
+    hashed_password = get_password_hash(user.password)
+    db_user = User(username=user.username, email=user.email, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    # 创建访问令牌
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/user/history", response_model=UserHistoryResponse)
+async def get_user_history(
+    skip: int = 0,
+    limit: int = 10,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    获取用户的历史记录
+    """
+    # 查询总数
+    total_count = db.query(InteractionRecord).filter(
+        InteractionRecord.user_id == current_user.id
+    ).count()
+
+    # 查询记录
+    records = db.query(InteractionRecord).filter(
+        InteractionRecord.user_id == current_user.id
+    ).order_by(InteractionRecord.created_at.desc()).offset(skip).limit(limit).all()
+
+    # 转换为响应格式
+    record_responses = []
+    for record in records:
+        record_responses.append({
+            "id": record.id,
+            "description": record.description,
+            "schema_result": record.schema_result,
+            "er_model_result": record.er_model_result,
+            "ddl_result": record.ddl_result,
+            "session_id": record.session_id,
+            "created_at": record.created_at
+        })
+
+    return UserHistoryResponse(total_count=total_count, records=record_responses)
+
+@app.post("/auth/login", response_model=Token)
+async def login_user(user: UserLogin, db: Session = Depends(get_db)):
+    """
+    用户登录
+    """
+    db_user = authenticate_user(db, user.username, user.password)
+    if not db_user:
+        raise HTTPException(
+            status_code=401,
+            detail="用户名或密码错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# 启动时初始化数据库
+init_db()
 
 if __name__ == "__main__":
     import uvicorn
