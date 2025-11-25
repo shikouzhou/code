@@ -5,7 +5,7 @@ from datetime import datetime
 import os
 
 # 数据库配置
-DATABASE_URL = os.getenv("DATABASE_URL", "mysql+mysqlconnector://root:845464115w@localhost/db_generator")
+DATABASE_URL = os.getenv("DATABASE_URL", "mysql+mysqlconnector://appuser1:123%21@localhost/db_generator")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

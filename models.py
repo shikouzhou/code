@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
@@ -21,9 +21,9 @@ class ErrorResponse(BaseModel):
 
 # 用户认证相关模型
 class UserRegister(BaseModel):
-    username: str
-    email: str
-    password: str
+    username: str = Field(..., min_length=3, max_length=50, description="用户名长度3-50字符")
+    email: EmailStr = Field(..., description="有效的邮箱地址")
+    password: str = Field(..., min_length=6, description="密码至少6位")
 
 class UserLogin(BaseModel):
     username: str
