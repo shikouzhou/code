@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QPushButton, QMessageBox, QSplitter, QGroupBox, QDialog, QFormLayout,
     QLineEdit, QListWidget, QListWidgetItem, QDialogButtonBox, QTabWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QSpinBox
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QSpinBox, QCheckBox
 )
 from PyQt6.QtCore import Qt
 
@@ -15,6 +15,7 @@ class SchemaGeneratorGUI(QWidget):
         super().__init__()
         self.current_schema = None
         self.current_ddl = None
+        self.current_session_id = None
         self.access_token = None
         self.current_user = None
         self.initUI()
@@ -75,6 +76,11 @@ class SchemaGeneratorGUI(QWidget):
         self.edit_btn.clicked.connect(self.edit_schema)
         self.edit_btn.setEnabled(False)
         button_layout.addWidget(self.edit_btn)
+
+        self.modify_btn = QPushButton("修改实体")
+        self.modify_btn.clicked.connect(self.modify_entities)
+        self.modify_btn.setEnabled(False)
+        button_layout.addWidget(self.modify_btn)
 
         input_layout.addLayout(button_layout)
         input_group.setLayout(input_layout)
@@ -142,6 +148,7 @@ class SchemaGeneratorGUI(QWidget):
             self.logout_btn.setEnabled(True)
             self.history_btn.setEnabled(True)
             self.generate_btn.setEnabled(True)
+            self.modify_btn.setEnabled(True)
         else:
             self.auth_label.setText("未登录")
             self.login_btn.setEnabled(True)
@@ -213,6 +220,7 @@ class SchemaGeneratorGUI(QWidget):
         self.access_token = None
         self.current_user = None
         self.update_auth_status()
+        self.modify_btn.setEnabled(False)
         QMessageBox.information(self, "成功", "已登出")
 
     def show_history_dialog(self):
@@ -237,8 +245,10 @@ class SchemaGeneratorGUI(QWidget):
                 data = response.json()
                 self.current_schema = data["schema"]
                 self.current_ddl = data["ddl"]
+                self.current_session_id = data["session_id"]
                 self.display_results(data)
                 self.edit_btn.setEnabled(True)
+                self.modify_btn.setEnabled(True)
                 QMessageBox.information(self, "成功", "模式生成成功")
             elif response.status_code == 401:
                 QMessageBox.critical(self, "错误", "认证失败，请重新登录")
@@ -327,7 +337,7 @@ class SchemaGeneratorGUI(QWidget):
             # 暂时用前端逻辑重新生成
             from schema_generator import build_er_model, convert_to_relational_schema, generate_mysql_ddl
             er_model = build_er_model(self.current_schema)
-            relational_schema = convert_to_relational_schema(er_model)
+            relational_schema = convert_to_relational_schema(self.current_schema)
             ddl = generate_mysql_ddl(relational_schema)
             self.current_ddl = ddl
             # 构造data
@@ -340,6 +350,38 @@ class SchemaGeneratorGUI(QWidget):
                 "ddl": ddl
             }
             self.display_results(data)
+
+    def modify_entities(self):
+        """修改实体和关系"""
+        if not self.current_schema or not self.current_session_id:
+            QMessageBox.warning(self, "警告", "没有可修改的模式")
+            return
+
+        dialog = ModifyEntitiesDialog(self.current_schema, self.current_session_id, self.access_token, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 重新获取最新的schema
+            self.refresh_current_schema()
+
+    def refresh_current_schema(self):
+        """重新获取当前session的schema"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            response = requests.get(f"http://localhost:8000/user/history?skip=0&limit=1", headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                if data["records"]:
+                    record = data["records"][0]
+                    self.current_schema = record["schema_result"]
+                    self.current_ddl = record["ddl_result"]
+                    # 重新显示结果
+                    display_data = {
+                        "schema": self.current_schema,
+                        "er_model": record["er_model_result"],
+                        "ddl": self.current_ddl
+                    }
+                    self.display_results(display_data)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"刷新数据失败: {str(e)}")
 
 class EditSchemaDialog(QDialog):
     def __init__(self, schema, parent=None):
@@ -697,6 +739,579 @@ class RecordDetailDialog(QDialog):
         layout.addWidget(buttons)
 
         self.setLayout(layout)
+
+
+class ModifyEntitiesDialog(QDialog):
+    def __init__(self, schema, session_id, access_token, parent=None):
+        super().__init__(parent)
+        self.schema = schema.copy()
+        self.session_id = session_id
+        self.access_token = access_token
+        self.setWindowTitle("修改实体和关系")
+        self.setGeometry(200, 200, 800, 600)
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # 标签页
+        tab_widget = QTabWidget()
+
+        # 实体管理标签页
+        entity_tab = QWidget()
+        entity_layout = QVBoxLayout()
+
+        # 实体列表
+        entity_list_group = QGroupBox("实体列表")
+        entity_list_layout = QVBoxLayout()
+        self.entity_list = QListWidget()
+        self.load_entities()
+        entity_list_layout.addWidget(self.entity_list)
+
+        # 实体操作按钮
+        entity_btn_layout = QHBoxLayout()
+        modify_entity_btn = QPushButton("修改实体")
+        modify_entity_btn.clicked.connect(self.modify_entity)
+        entity_btn_layout.addWidget(modify_entity_btn)
+
+        add_entity_btn = QPushButton("添加实体")
+        add_entity_btn.clicked.connect(self.add_entity)
+        entity_btn_layout.addWidget(add_entity_btn)
+
+        delete_entity_btn = QPushButton("删除实体")
+        delete_entity_btn.clicked.connect(self.delete_entity)
+        entity_btn_layout.addWidget(delete_entity_btn)
+
+        entity_list_layout.addLayout(entity_btn_layout)
+        entity_list_group.setLayout(entity_list_layout)
+        entity_layout.addWidget(entity_list_group)
+
+        entity_tab.setLayout(entity_layout)
+        tab_widget.addTab(entity_tab, "实体管理")
+
+        # 关系管理标签页
+        relation_tab = QWidget()
+        relation_layout = QVBoxLayout()
+
+        # 关系列表
+        relation_list_group = QGroupBox("关系列表")
+        relation_list_layout = QVBoxLayout()
+        self.relation_list = QListWidget()
+        self.load_relations()
+        relation_list_layout.addWidget(self.relation_list)
+
+        # 关系操作按钮
+        relation_btn_layout = QHBoxLayout()
+        modify_relation_btn = QPushButton("修改关系")
+        modify_relation_btn.clicked.connect(self.modify_relation)
+        relation_btn_layout.addWidget(modify_relation_btn)
+
+        add_relation_btn = QPushButton("添加关系")
+        add_relation_btn.clicked.connect(self.add_relation)
+        relation_btn_layout.addWidget(add_relation_btn)
+
+        delete_relation_btn = QPushButton("删除关系")
+        delete_relation_btn.clicked.connect(self.delete_relation)
+        relation_btn_layout.addWidget(delete_relation_btn)
+
+        relation_list_layout.addLayout(relation_btn_layout)
+        relation_list_group.setLayout(relation_list_layout)
+        relation_layout.addWidget(relation_list_group)
+
+        relation_tab.setLayout(relation_layout)
+        tab_widget.addTab(relation_tab, "关系管理")
+
+        layout.addWidget(tab_widget)
+
+        # 确定/取消按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def load_entities(self):
+        """加载实体列表"""
+        self.entity_list.clear()
+        for entity in self.schema["entities"]:
+            attrs_text = ", ".join([f"{attr['name']}({attr['data_type']})" for attr in entity["attributes"]])
+            item_text = f"{entity['table_name']}: {attrs_text}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, entity)
+            self.entity_list.addItem(item)
+
+    def load_relations(self):
+        """加载关系列表"""
+        self.relation_list.clear()
+        for relation in self.schema["relationships"]:
+            item_text = f"{relation['from_table']}.{relation['from_column']} -> {relation['to_table']}.{relation['to_column']} ({relation['on_delete']})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, relation)
+            self.relation_list.addItem(item)
+
+    def modify_entity(self):
+        """修改实体"""
+        current_item = self.entity_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "警告", "请先选择要修改的实体")
+            return
+
+        entity = current_item.data(Qt.ItemDataRole.UserRole)
+        dialog = ModifyEntityDialog(entity, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            modified_entity = dialog.get_entity()
+            # 调用API修改实体
+            self.call_modify_entity_api(modified_entity)
+
+    def add_entity(self):
+        """添加实体"""
+        dialog = AddEntityDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_entity = dialog.get_entity()
+            # 调用API添加实体
+            self.call_add_entity_api(new_entity)
+
+    def delete_entity(self):
+        """删除实体"""
+        current_item = self.entity_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "警告", "请先选择要删除的实体")
+            return
+
+        entity = current_item.data(Qt.ItemDataRole.UserRole)
+        reply = QMessageBox.question(self, "确认删除",
+                                   f"确定要删除实体 '{entity['table_name']}' 吗？",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            # 调用API删除实体
+            self.call_delete_entity_api(entity["table_name"])
+
+    def modify_relation(self):
+        """修改关系"""
+        current_item = self.relation_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "警告", "请先选择要修改的关系")
+            return
+
+        relation = current_item.data(Qt.ItemDataRole.UserRole)
+        dialog = ModifyRelationDialog(relation, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            old_relation, new_relation = dialog.get_relations()
+            # 调用API修改关系
+            self.call_modify_relation_api(old_relation, new_relation)
+
+    def add_relation(self):
+        """添加关系"""
+        dialog = AddRelationDialog(self.schema["entities"], self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_relation = dialog.get_relation()
+            # 调用API添加关系
+            self.call_add_relation_api(new_relation)
+
+    def delete_relation(self):
+        """删除关系"""
+        current_item = self.relation_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "警告", "请先选择要删除的关系")
+            return
+
+        relation = current_item.data(Qt.ItemDataRole.UserRole)
+        reply = QMessageBox.question(self, "确认删除",
+                                   f"确定要删除关系 '{relation['from_table']}.{relation['from_column']} -> {relation['to_table']}.{relation['to_column']}' 吗？",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            # 调用API删除关系
+            self.call_delete_relation_api(relation)
+
+    def call_modify_entity_api(self, entity):
+        """调用修改实体API"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            payload = {
+                "session_id": self.session_id,
+                "entity_name": entity["table_name"],
+                "new_attributes": entity["attributes"],
+                "new_table_name": entity.get("new_table_name")
+            }
+            response = requests.put("http://localhost:8000/modify-entity", json=payload, headers=headers)
+            if response.status_code == 200:
+                QMessageBox.information(self, "成功", "实体修改成功")
+                self.refresh_schema()
+            else:
+                QMessageBox.critical(self, "错误", f"修改失败: {response.text}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"网络错误: {str(e)}")
+
+    def call_add_entity_api(self, entity):
+        """调用添加实体API"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            payload = {
+                "session_id": self.session_id,
+                "entity": entity
+            }
+            response = requests.post("http://localhost:8000/add-entity", json=payload, headers=headers)
+            if response.status_code == 200:
+                QMessageBox.information(self, "成功", "实体添加成功")
+                self.refresh_schema()
+            else:
+                QMessageBox.critical(self, "错误", f"添加失败: {response.text}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"网络错误: {str(e)}")
+
+    def call_delete_entity_api(self, entity_name):
+        """调用删除实体API"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            payload = {
+                "session_id": self.session_id,
+                "entity_name": entity_name
+            }
+            response = requests.request("DELETE", "http://localhost:8000/delete-entity", json=payload, headers=headers)
+            if response.status_code == 200:
+                QMessageBox.information(self, "成功", "实体删除成功")
+                self.refresh_schema()
+            else:
+                QMessageBox.critical(self, "错误", f"删除失败: {response.text}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"网络错误: {str(e)}")
+
+    def call_modify_relation_api(self, old_relation, new_relation):
+        """调用修改关系API"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            payload = {
+                "session_id": self.session_id,
+                "old_relationship": old_relation,
+                "new_relationship": new_relation
+            }
+            response = requests.put("http://localhost:8000/modify-relationship", json=payload, headers=headers)
+            if response.status_code == 200:
+                QMessageBox.information(self, "成功", "关系修改成功")
+                self.refresh_schema()
+            else:
+                QMessageBox.critical(self, "错误", f"修改失败: {response.text}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"网络错误: {str(e)}")
+
+    def call_add_relation_api(self, relation):
+        """调用添加关系API"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            payload = {
+                "session_id": self.session_id,
+                "relationship": relation
+            }
+            response = requests.post("http://localhost:8000/add-relationship", json=payload, headers=headers)
+            if response.status_code == 200:
+                QMessageBox.information(self, "成功", "关系添加成功")
+                self.refresh_schema()
+            else:
+                QMessageBox.critical(self, "错误", f"添加失败: {response.text}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"网络错误: {str(e)}")
+
+    def call_delete_relation_api(self, relation):
+        """调用删除关系API"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            payload = {
+                "session_id": self.session_id,
+                "relationship": relation
+            }
+            response = requests.request("DELETE", "http://localhost:8000/delete-relationship", json=payload, headers=headers)
+            if response.status_code == 200:
+                QMessageBox.information(self, "成功", "关系删除成功")
+                self.refresh_schema()
+            else:
+                QMessageBox.critical(self, "错误", f"删除失败: {response.text}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"网络错误: {str(e)}")
+
+    def refresh_schema(self):
+        """刷新schema数据"""
+        try:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            response = requests.get(f"http://localhost:8000/user/history?skip=0&limit=1", headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                if data["records"]:
+                    record = data["records"][0]
+                    self.schema = record["schema_result"]
+                    self.load_entities()
+                    self.load_relations()
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"刷新失败: {str(e)}")
+
+
+class ModifyEntityDialog(QDialog):
+    def __init__(self, entity, parent=None):
+        super().__init__(parent)
+        self.entity = entity.copy()
+        self.setWindowTitle("修改实体")
+        self.setGeometry(300, 300, 500, 400)
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # 表名
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("表名:"))
+        self.name_edit = QLineEdit(self.entity["table_name"])
+        name_layout.addWidget(self.name_edit)
+        layout.addLayout(name_layout)
+
+        # 属性列表
+        attr_group = QGroupBox("属性")
+        attr_layout = QVBoxLayout()
+        self.attr_list = QListWidget()
+        self.load_attributes()
+        attr_layout.addWidget(self.attr_list)
+
+        attr_btn_layout = QHBoxLayout()
+        add_attr_btn = QPushButton("添加属性")
+        add_attr_btn.clicked.connect(self.add_attribute)
+        attr_btn_layout.addWidget(add_attr_btn)
+
+        remove_attr_btn = QPushButton("删除属性")
+        remove_attr_btn.clicked.connect(self.remove_attribute)
+        attr_btn_layout.addWidget(remove_attr_btn)
+
+        attr_layout.addLayout(attr_btn_layout)
+        attr_group.setLayout(attr_layout)
+        layout.addWidget(attr_group)
+
+        # 按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def load_attributes(self):
+        self.attr_list.clear()
+        for attr in self.entity["attributes"]:
+            item_text = f"{attr['name']} ({attr['data_type']}) {'[PK]' if attr['is_primary_key'] else ''}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, attr)
+            self.attr_list.addItem(item)
+
+    def add_attribute(self):
+        dialog = AddAttributeDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            attr = dialog.get_attribute()
+            self.entity["attributes"].append(attr)
+            self.load_attributes()
+
+    def remove_attribute(self):
+        current_item = self.attr_list.currentItem()
+        if current_item:
+            attr = current_item.data(Qt.ItemDataRole.UserRole)
+            self.entity["attributes"].remove(attr)
+            self.load_attributes()
+
+    def get_entity(self):
+        self.entity["table_name"] = self.name_edit.text().strip()
+        return self.entity
+
+
+class AddEntityDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("添加实体")
+        self.setGeometry(300, 300, 400, 300)
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # 表名
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("表名:"))
+        self.name_edit = QLineEdit()
+        name_layout.addWidget(self.name_edit)
+        layout.addLayout(name_layout)
+
+        # 属性
+        self.attributes = []
+
+        attr_group = QGroupBox("属性")
+        attr_layout = QVBoxLayout()
+        self.attr_list = QListWidget()
+        attr_layout.addWidget(self.attr_list)
+
+        add_attr_btn = QPushButton("添加属性")
+        add_attr_btn.clicked.connect(self.add_attribute)
+        attr_layout.addWidget(add_attr_btn)
+
+        attr_group.setLayout(attr_layout)
+        layout.addWidget(attr_group)
+
+        # 按钮
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def add_attribute(self):
+        dialog = AddAttributeDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            attr = dialog.get_attribute()
+            self.attributes.append(attr)
+            self.update_attr_list()
+
+    def update_attr_list(self):
+        self.attr_list.clear()
+        for attr in self.attributes:
+            item_text = f"{attr['name']} ({attr['data_type']}) {'[PK]' if attr['is_primary_key'] else ''}"
+            self.attr_list.addItem(item_text)
+
+    def get_entity(self):
+        return {
+            "table_name": self.name_edit.text().strip(),
+            "attributes": self.attributes
+        }
+
+
+class AddAttributeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("添加属性")
+        self.setGeometry(300, 300, 300, 200)
+        self.initUI()
+
+    def initUI(self):
+        layout = QFormLayout()
+
+        self.name_edit = QLineEdit()
+        layout.addRow("属性名:", self.name_edit)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["INT", "VARCHAR(255)", "TEXT", "DATETIME", "DECIMAL(10,2)", "BOOLEAN"])
+        layout.addRow("数据类型:", self.type_combo)
+
+        self.pk_check = QCheckBox("是否为主键")
+        layout.addRow(self.pk_check)
+
+        self.comment_edit = QLineEdit()
+        layout.addRow("注释:", self.comment_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def get_attribute(self):
+        return {
+            "name": self.name_edit.text().strip(),
+            "data_type": self.type_combo.currentText(),
+            "is_primary_key": self.pk_check.isChecked(),
+            "comment": self.comment_edit.text().strip()
+        }
+
+
+class ModifyRelationDialog(QDialog):
+    def __init__(self, relation, parent=None):
+        super().__init__(parent)
+        self.old_relation = relation.copy()
+        self.new_relation = relation.copy()
+        self.setWindowTitle("修改关系")
+        self.setGeometry(300, 300, 400, 200)
+        self.initUI()
+
+    def initUI(self):
+        layout = QFormLayout()
+
+        self.from_table_edit = QLineEdit(self.new_relation["from_table"])
+        layout.addRow("源表:", self.from_table_edit)
+
+        self.from_column_edit = QLineEdit(self.new_relation["from_column"])
+        layout.addRow("源列:", self.from_column_edit)
+
+        self.to_table_edit = QLineEdit(self.new_relation["to_table"])
+        layout.addRow("目标表:", self.to_table_edit)
+
+        self.to_column_edit = QLineEdit(self.new_relation["to_column"])
+        layout.addRow("目标列:", self.to_column_edit)
+
+        self.on_delete_combo = QComboBox()
+        self.on_delete_combo.addItems(["CASCADE", "SET NULL", "RESTRICT"])
+        self.on_delete_combo.setCurrentText(self.new_relation["on_delete"])
+        layout.addRow("删除行为:", self.on_delete_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def accept(self):
+        self.new_relation = {
+            "from_table": self.from_table_edit.text().strip(),
+            "from_column": self.from_column_edit.text().strip(),
+            "to_table": self.to_table_edit.text().strip(),
+            "to_column": self.to_column_edit.text().strip(),
+            "on_delete": self.on_delete_combo.currentText()
+        }
+        super().accept()
+
+    def get_relations(self):
+        return self.old_relation, self.new_relation
+
+
+class AddRelationDialog(QDialog):
+    def __init__(self, entities, parent=None):
+        super().__init__(parent)
+        self.entities = entities
+        self.setWindowTitle("添加关系")
+        self.setGeometry(300, 300, 400, 200)
+        self.initUI()
+
+    def initUI(self):
+        layout = QFormLayout()
+
+        self.from_table_combo = QComboBox()
+        self.from_table_combo.addItems([e["table_name"] for e in self.entities])
+        layout.addRow("源表:", self.from_table_combo)
+
+        self.from_column_edit = QLineEdit()
+        layout.addRow("源列:", self.from_column_edit)
+
+        self.to_table_combo = QComboBox()
+        self.to_table_combo.addItems([e["table_name"] for e in self.entities])
+        layout.addRow("目标表:", self.to_table_combo)
+
+        self.to_column_edit = QLineEdit()
+        layout.addRow("目标列:", self.to_column_edit)
+
+        self.on_delete_combo = QComboBox()
+        self.on_delete_combo.addItems(["CASCADE", "SET NULL", "RESTRICT"])
+        self.on_delete_combo.setCurrentText("CASCADE")
+        layout.addRow("删除行为:", self.on_delete_combo)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def get_relation(self):
+        return {
+            "from_table": self.from_table_combo.currentText(),
+            "from_column": self.from_column_edit.text().strip(),
+            "to_table": self.to_table_combo.currentText(),
+            "to_column": self.to_column_edit.text().strip(),
+            "on_delete": self.on_delete_combo.currentText()
+        }
 
 
 if __name__ == "__main__":

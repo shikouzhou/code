@@ -52,7 +52,7 @@ def test_generate_schema(token):
     url = f"{BASE_URL}/generate-schema"
     headers = {"Authorization": f"Bearer {token}"}
     payload = {
-        "description": "学生选课系统：学生有学号、姓名；课程有课程号、名称；学生可以选多门课，每门课可被多个学生选。"
+        "description": "医院挂号系统"
     }
 
     try:

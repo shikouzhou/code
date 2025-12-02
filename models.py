@@ -64,3 +64,54 @@ class InteractionRecordResponse(BaseModel):
 class UserHistoryResponse(BaseModel):
     total_count: int
     records: List[InteractionRecordResponse]
+
+# 实体和关系修改相关模型
+class AttributeModel(BaseModel):
+    name: str
+    data_type: str
+    is_primary_key: bool
+    comment: str
+
+class EntityModel(BaseModel):
+    table_name: str
+    attributes: List[AttributeModel]
+
+class RelationshipModel(BaseModel):
+    from_table: str
+    from_column: str
+    to_table: str
+    to_column: str
+    on_delete: str
+
+class ModifyEntityRequest(BaseModel):
+    session_id: str
+    entity_name: str
+    new_attributes: Optional[List[AttributeModel]] = None
+    new_table_name: Optional[str] = None
+
+class AddEntityRequest(BaseModel):
+    session_id: str
+    entity: EntityModel
+
+class DeleteEntityRequest(BaseModel):
+    session_id: str
+    entity_name: str
+
+class ModifyRelationshipRequest(BaseModel):
+    session_id: str
+    old_relationship: RelationshipModel
+    new_relationship: RelationshipModel
+
+class AddRelationshipRequest(BaseModel):
+    session_id: str
+    relationship: RelationshipModel
+
+class DeleteRelationshipRequest(BaseModel):
+    session_id: str
+    relationship: RelationshipModel
+
+class ModifySchemaResponse(BaseModel):
+    schema: Dict[str, Any]
+    er_model: Optional[ERModelResponse] = None
+    ddl: str
+    session_id: str
