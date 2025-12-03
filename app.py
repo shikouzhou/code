@@ -89,7 +89,8 @@ async def generate_schema(
         logger.info("关系模式转换成功")
 
         # 4. 生成MySQL DDL
-        ddl = generate_mysql_ddl(relational_schema)
+        create_statements, alter_statements = generate_mysql_ddl(relational_schema)
+        ddl = create_statements + "\n-- Add foreign keys\n" + alter_statements
         logger.info("DDL生成成功")
 
         # 5. 生成session_id
@@ -254,7 +255,8 @@ async def modify_entity_endpoint(
             ]
         }
         relational_schema = convert_to_relational_schema(modified_schema)
-        ddl = generate_mysql_ddl(relational_schema)
+        create_statements, alter_statements = generate_mysql_ddl(relational_schema)
+        ddl = create_statements + "\n-- Add foreign keys\n" + alter_statements
 
         # 更新数据库
         update_schema_in_db(request.session_id, current_user.id,
@@ -311,7 +313,8 @@ async def add_entity_endpoint(
             ]
         }
         relational_schema = convert_to_relational_schema(modified_schema)
-        ddl = generate_mysql_ddl(relational_schema)
+        create_statements, alter_statements = generate_mysql_ddl(relational_schema)
+        ddl = create_statements + "\n-- Add foreign keys\n" + alter_statements
 
         # 更新数据库
         update_schema_in_db(request.session_id, current_user.id,
@@ -356,7 +359,8 @@ async def delete_entity_endpoint(
             ]
         }
         relational_schema = convert_to_relational_schema(modified_schema)
-        ddl = generate_mysql_ddl(relational_schema)
+        create_statements, alter_statements = generate_mysql_ddl(relational_schema)
+        ddl = create_statements + "\n-- Add foreign keys\n" + alter_statements
 
         # 更新数据库
         update_schema_in_db(request.session_id, current_user.id,
@@ -415,7 +419,8 @@ async def modify_relationship_endpoint(
             ]
         }
         relational_schema = convert_to_relational_schema(modified_schema)
-        ddl = generate_mysql_ddl(relational_schema)
+        create_statements, alter_statements = generate_mysql_ddl(relational_schema)
+        ddl = create_statements + "\n-- Add foreign keys\n" + alter_statements
 
         # 更新数据库
         update_schema_in_db(request.session_id, current_user.id,
@@ -467,7 +472,8 @@ async def add_relationship_endpoint(
             ]
         }
         relational_schema = convert_to_relational_schema(modified_schema)
-        ddl = generate_mysql_ddl(relational_schema)
+        create_statements, alter_statements = generate_mysql_ddl(relational_schema)
+        ddl = create_statements + "\n-- Add foreign keys\n" + alter_statements
 
         # 更新数据库
         update_schema_in_db(request.session_id, current_user.id,
